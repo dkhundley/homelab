@@ -22,3 +22,10 @@ In this section, I'll share all the hardware for my personal homelab build. I ha
 | OEM Samsung 256GB M.2 PCI-e NVME SSD GEN 4X4 Internal Solid State Drive 30mm 2230 Form Factor M Key Steam Deck | [Amazon link](https://a.co/d/02pP6kUk) | $247.80 ($61.95 each) | Opting for 256GB NVMe SSDs. Would have preferred 128GB, but they’re not readily available. Options I found for 128GB were only roughly $4 cheaper, at which point, why not just go for 256GB? |
 | **Cooling / HAT** | | | |
 | GeeekPi P31 M.2 NVME M-Key PoE+ HAT with Official Active Cooler for Raspberry Pi 5, Support M.2 NVMe SSD 2230 2242| [Amazon link](https://a.co/d/0hqzuAcu) | $143.96 ($35.99 each) | Opting for NVMe PoE+ HAT, specifically GeeekPi’s P31 version. They do offer a P33, but it looks like that is more recommended if you’re going to use 1TB+ storage. Also it appears that P31 is slightly smaller. P31 suffices for my use. |
+
+## Helpful Resources
+This section covers a few of the helpful resources I used along the way when building my homelab.
+
+- **Any content from Jeff Geerling** ([Link](https://github.com/geerlingguy/mini-rack)): If you've ever built your own homelab, chances are you've come across Jeff Geerling's content. Jeff is a wealth of knowledge here, and I would highly recommend checking out any of his work. The link here takes you to his `mini-rack` GitHub, which contains a wealth of information that helped me in my own build. Jeff also has great videos on his YouTube channel.
+- **Matt Jarrett's homelab** ([Link](https://github.com/cujarrett/homelab)) Matt is a friend I know through my day job, and he has his own write up for his build on his GitHub linked above. It's relatively complementary toward Jeff Geerling's content.
+- **ChatGPT**: Okay, not going to lie, ChatGPT was a great help here. I have over 20 threads created as part of a singular ChatGPT Project that helped me in my decision making process.
