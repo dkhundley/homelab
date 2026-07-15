@@ -9,6 +9,15 @@ My primary intention with building this homelab is simply to **learn and have fu
 
 While I don't know if I'll ever be in a formal position to manage physical IT infrastructure, I thought it'd be fun to learn these skills myself by building / maintaining this homelab. I intend to learn things like Ansible, managing a Kubernetes (k8s) cluster, and more. What I do **not** intend on using this homelab for is local LLM hosting. While there could be some value in learning that, the reality is that I would need highly specialized hardware that would get far too expensive for me to purchase on my own. Everything I intend to manage in my homelab has low computational needs.
 
+## Livestreams
+Throughout my build process, I intend to livestream as much of it as I can. This will likely take place over the course of several months. These streams will likely breakdown into one of two categories: streams specifically dedicated to this homelab and streams dedicated to skills that would go into supporting the homelab.
+
+### Direct Homelab Streams
+- **Part 1: The Hardware** ([Link](https://www.youtube.com/live/giuC7GGIl5E?si=JmSnEAJfPBgQZ_kP)): This introductory stream covers my intention behind building my homelab, resources I used to help with researching what I wanted to build, and a thorough review of all the hardware going into my homelab.
+
+### Skill-Adjacent Homelab Streams
+None yet, but I will add them once I get here!
+
 ## Hardware
 In this section, I'll share all the hardware for my personal homelab build. I have included links for purchase plus component prices, but please be aware that pricing / availability is likely subject to change. All my components were purchased during summer 2026. (Note: I am still updating this table. Will remove this note once my purchases are settled.)
 
@@ -32,5 +41,5 @@ In this section, I'll share all the hardware for my personal homelab build. I ha
 This section covers a few of the helpful resources I used along the way when building my homelab.
 
 - **Any content from Jeff Geerling** ([Link](https://github.com/geerlingguy/mini-rack)): If you've ever built your own homelab, chances are you've come across Jeff Geerling's content. Jeff is a wealth of knowledge here, and I would highly recommend checking out any of his work. The link here takes you to his `mini-rack` GitHub, which contains a wealth of information that helped me in my own build. Jeff also has great videos on his YouTube channel.
-- **Matt Jarrett's homelab** ([Link](https://github.com/cujarrett/homelab)) Matt is a friend I know through my day job, and he has his own write up for his build on his GitHub linked above. It's relatively complementary toward Jeff Geerling's content.
+- **Matt Jarrett's homelab** ([Link](https://github.com/cujarrett/homelab)): Matt is a friend I know through my day job, and he has his own write up for his build on his GitHub linked above. It's relatively complementary toward Jeff Geerling's content.
 - **ChatGPT**: Okay, not going to lie, ChatGPT was a great help here. I have over 20 threads created as part of a singular ChatGPT Project that helped me in my decision making process.
