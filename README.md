@@ -24,7 +24,7 @@ In this section, I'll share all the hardware for my personal homelab build. I ha
 | Product | Link | Price | Considerations |
 |---------|------|-------|----------------|
 | **Compute** | | | |
-| Raspberry Pi 5 (x4) | [4GB model link](https://www.canakit.com/raspberry-pi-5-4gb.html)<br><br>[8GB model link](https://www.canakit.com/raspberry-pi-5-8gb.html) | TBA (Haven’t decided on RAM sizes for all 4 yet) | Building with Raspberry Pi 5s. I will come back and update this later once I’ve settled on RAM sizes. |
+| Raspberry Pi 5 (x4) | [4GB model CanaKit link](https://www.canakit.com/raspberry-pi-5-4gb.html)<br><br>[8GB model CanaKit link](https://www.canakit.com/raspberry-pi-5-8gb.html) | TBA (Haven’t decided on RAM sizes for all 4 yet) | Building with Raspberry Pi 5s. I will come back and update this later once I’ve settled on RAM sizes. |
 | **Case** | | | |
 | GeeekPi DeskPi RackMate T0 Plus<br>10-inch 4U Mini Server Cabinet (Black) | [Amazon link](https://a.co/d/04l6uONa) | $99.99 | Looking to keep as small as possible. Opted for the DeskPi RackMate T0 Plus over the standard T0 since it is a little deeper, giving me more wiggle room for components and cabling. |
 | **Storage** | | | |
