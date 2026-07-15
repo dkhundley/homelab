@@ -4,6 +4,11 @@
 > [!NOTE]
 > I am just getting up and going with my homelab! I intend to continue adding content to this repo likely all the way through the end of 2026. I'll remove this note once I feel relatively solidified.
 
+## Intention
+My primary intention with building this homelab is simply to **learn and have fun**. For folks who work in a large organization, you likely work amongst either cloud services or managed on-premises environments. In both instances, the environment is largely managed for you, which is ideal if a company is looking to apply specific standards across all software engineering efforts. The "downside" to this (although it's not really a downside) is that most developers are not exposed to managing physical IT infrastructure.
+
+While I don't know if I'll ever be in a formal position to manage physical IT infrastructure, I thought it'd be fun to learn these skills myself by building / maintaining this homelab. I intend to learn things like Ansible, managing a Kubernetes (k8s) cluster, and more. What I do **not** intend on using this homelab for is local LLM hosting. While there could be some value in learning that, the reality is that I would need highly specialized hardware that would get far too expensive for me to purchase on my own. Everything I intend to manage in my homelab has low computational needs.
+
 ## Hardware
 In this section, I'll share all the hardware for my personal homelab build. I have included links for purchase plus component prices, but please be aware that pricing / availability is likely subject to change. All my components were purchased during summer 2026. (Note: I am still updating this table. Will remove this note once my purchases are settled.)
 
