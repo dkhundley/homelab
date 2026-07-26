@@ -14,6 +14,7 @@ Throughout my build process, I intend to livestream as much of it as I can. This
 
 ### Direct Homelab Streams
 - **Part 1: The Hardware** ([Link](https://www.youtube.com/live/giuC7GGIl5E?si=JmSnEAJfPBgQZ_kP)): This introductory stream covers my intention behind building my homelab, resources I used to help with researching what I wanted to build, and a thorough review of all the hardware going into my homelab.
+- **Part 2: Setting Up a Raspberry Pi** ([Link](https://www.youtube.com/live/HyxFVUAu1XA?si=7_Br6tQNNkrJDQQx)): This stream focuses on setting up one of the Raspberry Pis going into my homelab, including both the hardware and imaging of the Raspberry Pi OS.
 
 ### Skill-Adjacent Homelab Streams
 None yet, but I will add them once I get here!
