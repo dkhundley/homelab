@@ -87,7 +87,7 @@ Traffic follows these paths:
 - cross-node pod traffic is encapsulated by Flannel VXLAN and sent between the nodes' `10.10.10.x` addresses over `eth0`;
 - package updates, container-image pulls, NTP, and other host Internet traffic follow the default route over `wlan0`;
 - pod Internet egress is masqueraded by the cluster networking and then follows the node's Wi-Fi default route; and
-- the Mac uses the Wi-Fi-resolvable name `dkhundley-homelab-controller` for SSH and Kubernetes API administration. It does not need a reachable path to `10.10.10.0/24`.
+- the Mac uses the Bonjour/mDNS name `dkhundley-homelab-controller.local` for SSH and Kubernetes API administration. It does not need a reachable path to `10.10.10.0/24`.
 
 Use a power supply and active cooling suitable for sustained Raspberry Pi 5 load. Power or thermal throttling can look like a Kubernetes capacity problem, so check `vcgencmd get_throttled` and temperatures when host performance is unexpectedly erratic.
 
@@ -102,7 +102,7 @@ Do not proceed if either range overlaps `10.10.10.0/24`, the `192.168.4.0/22` ho
 
 ## Prerequisites and security boundaries
 
-The admin Mac needs `ssh`, `scp`, `kubectl`, and `jq`. The guide also assumes that `dkhundley-homelab-controller` resolves on the Mac to the controller's Wi-Fi address through local DNS or the workstation's hosts file.
+The admin Mac needs `ssh`, `scp`, `kubectl`, and `jq`. The guide uses macOS Bonjour/mDNS resolution so that `dkhundley-homelab-controller.local` resolves to the controller's Wi-Fi address without depending on router-provided DNS or a workstation hosts-file entry.
 
 Keep cluster ports on the isolated Ethernet network and administrative ports on the trusted home network. Never expose Flannel UDP `8472` to the Internet.
 
@@ -136,7 +136,7 @@ The Ethernet addresses are fixed by this runbook rather than assigned by the hom
 
 | Hostname | Ethernet MAC | Static `eth0` address | Wi-Fi SSH name/address | Notes |
 |---|---|---|---|---|
-| `dkhundley-homelab-controller` | `_________________` | `10.10.10.10/24` | `dkhundley-homelab-controller` | 4 GB; Mac-facing API endpoint |
+| `dkhundley-homelab-controller` | `_________________` | `10.10.10.10/24` | `dkhundley-homelab-controller.local` | 4 GB; Mac-facing API endpoint |
 | `dkhundley-homelab-worker1` | `_________________` | `10.10.10.11/24` | `_________________` | 8 GB |
 | `dkhundley-homelab-worker2` | `_________________` | `10.10.10.12/24` | `_________________` | 8 GB |
 | `dkhundley-homelab-worker3` | `_________________` | `10.10.10.13/24` | `_________________` | 8 GB |
@@ -376,7 +376,7 @@ curl -fsSIL https://update.k3s.io/ >/dev/null
 
 ### 3.4 Complete the pre-installation readiness check
 
-These checks do not configure anything. Together, they catch identity, routing, DNS, and clock problems that would otherwise make a node join incorrectly or make the controller unreachable from the Mac.
+These checks do not configure anything. Together, they catch identity, routing, and clock problems that would otherwise make a node join incorrectly.
 
 **Run on:** all four Pis.
 
@@ -385,15 +385,11 @@ hostnamectl --static
 ip -br link
 ip -br address
 ip route
-getent hosts dkhundley-homelab-controller
 timedatectl status
 timedatectl show -p NTPSynchronized --value
 ```
 
 Read the output as follows. Exact Wi-Fi addresses, gateways, and interface-state wording will vary by home network and whether a cable is connected.
-
-> [!NOTE]
-> Raspberry Pi OS may map a machine's own hostname to `127.0.1.1` in `/etc/hosts`. If the controller resolves its own name to that loopback address, validate the controller name from the admin Mac and workers instead. Those external lookups must return the controller's Wi-Fi/home-LAN address. Do not edit a cloud-init-managed `/etc/hosts` file merely to change the controller's local self-resolution.
 
 | Check | What it establishes | Expected result |
 |---|---|---|
@@ -401,11 +397,18 @@ Read the output as follows. Exact Wi-Fi addresses, gateways, and interface-state
 | `ip -br link` | The expected network devices exist and are usable. | `eth0` and `wlan0` are present. `wlan0` must be `UP`; `eth0` should be `UP` when its Ethernet cable is connected. |
 | `ip -br address` | Each network has the right address. | `eth0` has this node's assigned address from `10.10.10.10/24` through `10.10.10.13/24`. `wlan0` has a home-LAN address (normally `192.168.4.x/22` here). Other addresses, such as IPv6, are not a concern. |
 | `ip route` | Cluster traffic and general traffic will take different paths. | A directly connected `10.10.10.0/24 dev eth0` route is present. There is exactly one `default` route, and it uses `wlan0`—never `eth0`. |
-| `getent hosts dkhundley-homelab-controller` | The workers can resolve the Mac-facing controller name. | On workers it returns the controller's **Wi-Fi/home-LAN** address, not `10.10.10.10`. The controller itself may return `127.0.1.1` as described above. The Mac independently validates this name before copying kubeconfig. |
 | `timedatectl status` | The system time service is enabled and the displayed clock, time zone, and synchronization state look sensible. | `System clock synchronized: yes` once it has had time to contact NTP. |
 | `timedatectl show -p NTPSynchronized --value` | A script-friendly, unambiguous NTP check. | `yes`. It can briefly be `no` just after boot or after Wi-Fi reconnects; wait a minute and check again. |
 
-Do not install k3s until the Ethernet address matches the static inventory, the only default route uses `wlan0`, workers and the Mac resolve the controller name to its Wi-Fi address, and `NTPSynchronized` is `yes`. If a check fails, correct the relevant Wi-Fi DNS, gateway, Ethernet profile, or NTP issue first.
+Verify the Mac-facing mDNS identity separately:
+
+**Run on:** the admin Mac.
+
+```shell
+dscacheutil -q host -a name dkhundley-homelab-controller.local
+```
+
+The lookup must return a home-LAN address for the controller, not its isolated `10.10.10.10` Ethernet address. Do not install k3s until this lookup works, every Ethernet address matches the static inventory, the only default route uses `wlan0`, and `NTPSynchronized` is `yes`. If a check fails, correct the relevant mDNS, Wi-Fi, gateway, Ethernet profile, or NTP issue first.
 
 Finally, inspect every route, including VPN routes:
 
@@ -432,6 +435,7 @@ The address is fixed by the cluster inventory:
 
 ```shell
 export CONTROLLER_NAME="dkhundley-homelab-controller"
+export CONTROLLER_ADMIN_ENDPOINT="${CONTROLLER_NAME}.local"
 export CONTROLLER_IP="10.10.10.10"
 test "$(hostnamectl --static)" = "$CONTROLLER_NAME"
 ip -4 address show dev eth0 | grep -F "${CONTROLLER_IP}/24"
@@ -459,6 +463,7 @@ node-ip: "${CONTROLLER_IP}"
 advertise-address: "${CONTROLLER_IP}"
 tls-san:
   - "${CONTROLLER_NAME}"
+  - "${CONTROLLER_ADMIN_ENDPOINT}"
   - "${CONTROLLER_IP}"
 cluster-cidr: "10.42.0.0/16"
 service-cidr: "10.43.0.0/16"
@@ -482,7 +487,7 @@ SQLite is selected intentionally by omitting `cluster-init` and `datastore-endpo
 
 `node-ip`, `advertise-address`, and `flannel-iface` make the Ethernet network explicit instead of relying on automatic interface detection. Do not add `node-external-ip`: the Wi-Fi address is an administration and egress path, not a Kubernetes node address. Also do not set `bind-address` to `10.10.10.10`; retaining the default `0.0.0.0` listener is what allows the Mac to reach the API through the controller's Wi-Fi address. See the [k3s server configuration reference](https://docs.k3s.io/cli/server).
 
-The `dkhundley-homelab-controller` TLS subject alternative name is the Mac-facing Wi-Fi identity, while `10.10.10.10` is the server's Ethernet identity. If the administrative name changes, add the exact replacement to `tls-san` before installation and use the same value in the external kubeconfig. Until manifest-managed ingress and load balancing are added, expose applications deliberately with `ClusterIP`, `NodePort`, or `kubectl port-forward` as appropriate; do not expose the Kubernetes API or VXLAN to the public Internet.
+The bare `dkhundley-homelab-controller` name remains the Kubernetes node identity, `dkhundley-homelab-controller.local` is the Mac-facing Bonjour/mDNS identity, and `10.10.10.10` is the server's Ethernet identity. Every hostname used to access the API must appear exactly in `tls-san`; the external kubeconfig therefore uses the `.local` name. Until manifest-managed ingress and load balancing are added, expose applications deliberately with `ClusterIP`, `NodePort`, or `kubectl port-forward` as appropriate; do not expose the Kubernetes API or VXLAN to the public Internet.
 
 ### 4.3 Create the controller's kubelet resource policy
 
@@ -548,19 +553,22 @@ Never copy `/var/lib/rancher/k3s/server/token` to a worker. That server token gr
 
 Repeat the following subsections for `worker1`, `worker2`, and `worker3`, waiting for each node to become Ready before starting the next. Sequential joins make hostname, token, address, cgroup, and firewall failures much easier to isolate.
 
+The SSH examples in this section use key-based authentication with the private key at `~/.ssh/homelab`, the `dkhundley` account, and each Raspberry Pi's `.local` mDNS hostname.
+
 ### 5.1 Transfer the agent-only token
 
 **Run on:** the admin Mac, once per worker.
 
-For each worker, first transfer the agent token directly over SSH from the controller. Run this on the admin workstation, replacing the SSH names or addresses as needed:
+For each worker, first transfer the agent token directly over SSH from the controller. Run this on the admin workstation, changing `worker1` to the worker currently being joined:
 
 ```shell
-export CONTROLLER_SSH="dkhundley-homelab-controller"
-export WORKER_SSH="dkhundley-homelab-worker1"
+export SSH_IDENTITY="$HOME/.ssh/homelab"
+export CONTROLLER_SSH="dkhundley@dkhundley-homelab-controller.local"
+export WORKER_SSH="dkhundley@dkhundley-homelab-worker1.local"
 
-ssh "$CONTROLLER_SSH" \
+ssh -i "$SSH_IDENTITY" "$CONTROLLER_SSH" \
   'sudo cat /var/lib/rancher/k3s/server/agent-token' \
-  | ssh "$WORKER_SSH" \
+  | ssh -i "$SSH_IDENTITY" "$WORKER_SSH" \
     'sudo install -d -o root -g root -m 0755 /etc/rancher/k3s &&
      sudo tee /etc/rancher/k3s/agent-token >/dev/null &&
      sudo chown root:root /etc/rancher/k3s/agent-token &&
@@ -572,6 +580,13 @@ This avoids saving the token on the workstation. It assumes the SSH account can 
 ### 5.2 Validate the worker and controller path
 
 **Run on:** the worker currently being joined.
+
+Connect to that worker from the admin Mac, changing `worker1` as needed:
+
+```shell
+ssh -i "$HOME/.ssh/homelab" \
+  dkhundley@dkhundley-homelab-worker1.local
+```
 
 Derive and validate its fixed Ethernet value from its hostname:
 
@@ -610,12 +625,12 @@ token-file: "/etc/rancher/k3s/agent-token"
 node-name: "${NODE_NAME}"
 node-ip: "${NODE_IP}"
 flannel-iface: "eth0"
-node-label:
-  - "node-role.kubernetes.io/worker=true"
 EOF
 sudo chown root:root /etc/rancher/k3s/config.yaml
 sudo chmod 0600 /etc/rancher/k3s/config.yaml
 ```
+
+Do not add `node-role.kubernetes.io/worker` through the agent's `node-label` setting. The `kubernetes.io` namespace is reserved, and the [kubelet rejects restricted role labels passed through `--node-labels`](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/#options); on `v1.36.2+k3s1`, that prevents the agent service from starting. Apply the optional worker-role label through the Kubernetes API from the controller only after the node has registered.
 
 Create the worker kubelet drop-in before starting k3s. [How Kubernetes resource protection works](#how-kubernetes-resource-protection-works) explains these role-specific values.
 
@@ -666,13 +681,29 @@ The worker configuration deliberately uses the controller's Ethernet URL, not `h
 
 **Run on:** the controller.
 
+From a separate terminal on the admin Mac, connect to the controller:
+
+```shell
+ssh -i "$HOME/.ssh/homelab" \
+  dkhundley@dkhundley-homelab-controller.local
+```
+
 Wait for the worker to become Ready:
 
 ```shell
 sudo k3s kubectl get nodes -o wide --watch
 ```
 
-**Expected result:** the new node reports `Ready` with its assigned `10.10.10.x` InternalIP. Use `Ctrl-C` after it is Ready, then repeat the entire section for the next worker.
+Use `Ctrl-C` after the new node reports `Ready`, then label its role through the administrator credential. Change `worker1` to the worker currently being joined:
+
+```shell
+export NODE_NAME="dkhundley-homelab-worker1"
+sudo k3s kubectl label node "$NODE_NAME" \
+  node-role.kubernetes.io/worker=worker
+sudo k3s kubectl get node "$NODE_NAME" -o wide
+```
+
+**Expected result:** the new node reports `Ready`, shows the `worker` role, and has its assigned `10.10.10.x` InternalIP. Repeat the entire section for the next worker.
 
 ## 6. Configure administrator access from the Mac
 
@@ -681,23 +712,51 @@ sudo k3s kubectl get nodes -o wide --watch
 **Run on:** the admin Mac.
 
 ```shell
-export CONTROLLER_SSH="dkhundley-homelab-controller"
-export CONTROLLER_ADMIN_ENDPOINT="dkhundley-homelab-controller"
+export SSH_IDENTITY="$HOME/.ssh/homelab"
+export CONTROLLER_SSH="dkhundley@dkhundley-homelab-controller.local"
+export CONTROLLER_ADMIN_ENDPOINT="dkhundley-homelab-controller.local"
 export KUBECONFIG="$HOME/.kube/k3s-homelab.yaml"
 
 dscacheutil -q host -a name "$CONTROLLER_ADMIN_ENDPOINT"
 nc -vz "$CONTROLLER_ADMIN_ENDPOINT" 6443
 install -d -m 0700 "$HOME/.kube"
 umask 077
-ssh "$CONTROLLER_SSH" 'sudo cat /etc/rancher/k3s/k3s.yaml' \
-  > "$KUBECONFIG"
-kubectl --kubeconfig "$KUBECONFIG" config set-cluster default \
-  --server="https://${CONTROLLER_ADMIN_ENDPOINT}:6443"
-chmod 0600 "$KUBECONFIG"
-kubectl --kubeconfig "$KUBECONFIG" get nodes -o wide
+(
+  set -e
+  TEMP_KUBECONFIG="$(mktemp "${KUBECONFIG}.XXXXXX")"
+  trap 'rm -f "$TEMP_KUBECONFIG"' EXIT
+  ssh -i "$SSH_IDENTITY" "$CONTROLLER_SSH" \
+    'sudo cat /etc/rancher/k3s/k3s.yaml' \
+    > "$TEMP_KUBECONFIG"
+  test -s "$TEMP_KUBECONFIG"
+  kubectl --kubeconfig "$TEMP_KUBECONFIG" config set-cluster default \
+    --server="https://${CONTROLLER_ADMIN_ENDPOINT}:6443"
+  test "$(kubectl --kubeconfig "$TEMP_KUBECONFIG" \
+    config current-context)" = "default"
+  mv "$TEMP_KUBECONFIG" "$KUBECONFIG"
+  trap - EXIT
+) && chmod 0600 "$KUBECONFIG" \
+  && kubectl --kubeconfig "$KUBECONFIG" get nodes -o wide
 ```
 
-On macOS, `dscacheutil` proves that the selected name resolves through the home network, and `nc` proves that the Wi-Fi API listener is reachable. The kubeconfig must not use `10.10.10.10`, because the home network provides no path to the isolated Ethernet subnet. The endpoint must exactly match a name or address in `tls-san`; otherwise `kubectl` will report an x509 hostname error.
+On macOS, `dscacheutil` proves that Bonjour/mDNS resolves the selected name through the home network, and `nc` proves that the Wi-Fi API listener is reachable. The temporary file and chained success checks prevent a failed SSH command from replacing a valid kubeconfig with an empty or incomplete file. The kubeconfig must not use `10.10.10.10`, because the home network provides no path to the isolated Ethernet subnet. The endpoint must exactly match a name or address in `tls-san`; otherwise `kubectl` will report an x509 hostname error.
+
+The `KUBECONFIG` export above applies only to the current shell. Persist it for new interactive zsh sessions without copying the administrator credential into another file:
+
+```shell
+grep -qxF 'export KUBECONFIG="$HOME/.kube/k3s-homelab.yaml"' \
+  "$HOME/.zshrc" 2>/dev/null \
+  || printf '%s\n' \
+    'export KUBECONFIG="$HOME/.kube/k3s-homelab.yaml"' \
+    >> "$HOME/.zshrc"
+source "$HOME/.zshrc"
+chmod 0600 "$KUBECONFIG"
+test "$KUBECONFIG" = "$HOME/.kube/k3s-homelab.yaml"
+kubectl config current-context
+kubectl get nodes -o wide
+```
+
+Open a new terminal and repeat the final three read-only checks to confirm that zsh loaded the setting automatically. The shell startup file contains only the kubeconfig path; the credential remains in the protected `k3s-homelab.yaml` file.
 
 The server automatically rotates client certificates embedded in its local kubeconfig when k3s starts and they are near expiration, but a copied file is not refreshed automatically. Periodically recopy it, especially after certificate rotation. See [Cluster Access](https://docs.k3s.io/cluster-access).
 
@@ -713,6 +772,9 @@ The remainder of this guide assumes either `KUBECONFIG` is exported as above or 
 
 ```shell
 kubectl get nodes -o wide
+kubectl get nodes \
+  -l node-role.kubernetes.io/worker=worker \
+  -o name
 kubectl get pods -A -o wide
 kubectl get storageclass
 kubectl describe node dkhundley-homelab-controller | sed -n '/Taints:/p'
@@ -723,6 +785,7 @@ Confirm:
 
 - exactly four ARM64 nodes are `Ready` and report `v1.36.2+k3s1`;
 - their Kubernetes InternalIPs are exactly `10.10.10.10`, `.11`, `.12`, and `.13` according to the inventory;
+- exactly three nodes have the `node-role.kubernetes.io/worker=worker` label;
 - the controller has `node-role.kubernetes.io/control-plane=true:NoSchedule`;
 - CoreDNS, metrics-server, and local-path provisioner are healthy;
 - no Traefik or `svclb` pod exists; and
@@ -730,15 +793,15 @@ Confirm:
 
 ### 7.2 Verify both network paths and advertised node addresses
 
-First prove that the external kubeconfig uses the controller's Wi-Fi-resolvable name rather than its isolated Ethernet address:
+First prove that the external kubeconfig uses the controller's Bonjour/mDNS name rather than its isolated Ethernet address:
 
 **Run on:** the admin Mac.
 
 ```shell
 test "$(kubectl config view --minify \
   -o jsonpath='{.clusters[0].cluster.server}')" \
-  = "https://dkhundley-homelab-controller:6443"
-nc -vz dkhundley-homelab-controller 6443
+  = "https://dkhundley-homelab-controller.local:6443"
+nc -vz dkhundley-homelab-controller.local 6443
 kubectl cluster-info
 ```
 
@@ -1266,7 +1329,9 @@ export LOCAL_BACKUP_DIR="$HOME/k3s-protected-backups"
 test "$REMOTE_BACKUP" != "/var/tmp/dkhundley-homelab-controller-REPLACE_WITH_TIMESTAMP.tar.gz"
 install -d -m 0700 "$LOCAL_BACKUP_DIR"
 umask 077
-ssh dkhundley-homelab-controller "sudo cat '${REMOTE_BACKUP}'" \
+ssh -i "$HOME/.ssh/homelab" \
+  dkhundley@dkhundley-homelab-controller.local \
+  "sudo cat '${REMOTE_BACKUP}'" \
   > "${LOCAL_BACKUP_DIR}/$(basename "$REMOTE_BACKUP")"
 shasum -a 256 "${LOCAL_BACKUP_DIR}/$(basename "$REMOTE_BACKUP")"
 ```
@@ -1359,6 +1424,8 @@ sudo grep -E '^(server|node-ip|flannel-iface):' \
 
 The route must select `eth0`, and the configuration must not contain the controller's Wi-Fi address or hostname in `server`. Also confirm that no VPN route captures the Ethernet, pod, or service CIDR.
 
+If the agent repeatedly restarts with `failed to validate kubelet flags` and identifies `node-role.kubernetes.io/worker` as an unknown label, remove that label from the worker's `node-label` configuration and restart `k3s-agent`. Wait for the node to become `Ready`, then apply the worker-role label from the controller as shown in [Install the agent and wait for Ready](#54-install-the-agent-and-wait-for-ready). A kubelet cannot self-assign this restricted role label.
+
 ### Ethernet becomes the default route or Internet access fails
 
 **Run on:** the affected Pi.
@@ -1414,17 +1481,19 @@ Every InternalIP and VXLAN underlay destination must be in `10.10.10.0/24`, and 
 **Run on:** the admin Mac.
 
 ```shell
-dscacheutil -q host -a name dkhundley-homelab-controller
-nc -vz dkhundley-homelab-controller 6443
+dscacheutil -q host -a name dkhundley-homelab-controller.local
+nc -vz dkhundley-homelab-controller.local 6443
 kubectl config view --minify \
   -o jsonpath='{.clusters[0].cluster.server}'; echo
-openssl s_client -connect dkhundley-homelab-controller:6443 \
-  -servername dkhundley-homelab-controller </dev/null 2>/dev/null \
+openssl s_client -connect dkhundley-homelab-controller.local:6443 \
+  -servername dkhundley-homelab-controller.local </dev/null 2>/dev/null \
   | openssl x509 -noout -text \
   | sed -n '/Subject Alternative Name/,+1p'
 ```
 
-The name must resolve to the controller's Wi-Fi address, TCP `6443` must be reachable from the trusted home network, and the kubeconfig endpoint must be `https://dkhundley-homelab-controller:6443`. If TCP works but certificate validation fails, ensure `dkhundley-homelab-controller` is present in the controller's `tls-san`, restart `k3s`, and recopy the kubeconfig. Do not replace the endpoint with `10.10.10.10`; that subnet is intentionally isolated from the Mac.
+The `.local` name must resolve to the controller's Wi-Fi address, TCP `6443` must be reachable from the trusted home network, and the kubeconfig endpoint must be `https://dkhundley-homelab-controller.local:6443`. If TCP works but certificate validation fails, ensure the exact `.local` name is present in the controller's `tls-san`, restart `k3s`, and recopy the kubeconfig. Do not replace the endpoint with `10.10.10.10`; that subnet is intentionally isolated from the Mac.
+
+If kubectl instead attempts `http://localhost:8080`, the selected kubeconfig has no usable current context—commonly because SSH failed while an earlier command was redirecting directly into the destination file. Repeat [Configure administrator access from the Mac](#6-configure-administrator-access-from-the-mac); its temporary-file workflow leaves the destination untouched unless SSH, kubeconfig validation, and endpoint replacement all succeed.
 
 ### Pods remain Pending
 
