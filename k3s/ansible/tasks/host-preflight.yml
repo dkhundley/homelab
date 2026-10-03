@@ -1,0 +1,37 @@
+---
+- name: Prove privilege escalation works
+  ansible.builtin.command: /usr/bin/true
+  changed_when: false
+
+- name: Check the configured hostname
+  ansible.builtin.command:
+    argv: [hostnamectl, --static]
+  changed_when: false
+  register: static_hostname
+
+- name: Check the root filesystem source
+  ansible.builtin.command:
+    argv: [findmnt, -n, -o, SOURCE, /]
+  changed_when: false
+  register: root_filesystem_source
+
+- name: Check required network interfaces
+  ansible.builtin.stat:
+    path: "/sys/class/net/{{ item }}"
+  loop:
+    - "{{ k3s_cluster_interface }}"
+    - "{{ k3s_admin_interface }}"
+  register: required_interfaces
+
+- name: Assert the Raspberry Pi host identity and platform
+  ansible.builtin.assert:
+    that:
+      - static_hostname.stdout == inventory_hostname
+      - ansible_architecture == 'aarch64'
+      - ansible_os_family == 'Debian'
+      - root_filesystem_source.stdout is match('^/dev/nvme')
+      - required_interfaces.results | map(attribute='stat.exists') | min
+      - k3s_node_ip is match('^10\\.10\\.10\\.(10|11|12|13)$')
+    fail_msg: >-
+      {{ inventory_hostname }} must have its inventory hostname, 64-bit Debian-family
+      Raspberry Pi OS on NVMe, both required interfaces, and a valid node IP.

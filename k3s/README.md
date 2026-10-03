@@ -2,14 +2,17 @@
 
 This runbook builds a four-node, ARM64 [k3s](https://docs.k3s.io/) cluster on Raspberry Pi 5 computers. It is written for an experienced software engineer who is comfortable with containers and cloud services but may not manage Linux hosts or networks every day.
 
+> [!TIP]
+> The [Ansible installation project](ansible/README.md) automates the initial host preparation, network configuration, k3s installation, administrator kubeconfig, and validation described below. Keep this runbook as the architecture, operations, recovery, and manual troubleshooting reference.
+
 Follow the installation sections in order. Each command block says where to run it, what it proves or changes, and what success looks like. After installation, use the remaining sections as an operations reference.
 
-The Pis are dedicated Kubernetes hosts: apart from Raspberry Pi OS and host-management software, deploy services through Kubernetes manifests.
+The Pis are dedicated Kubernetes hosts: apart from Raspberry Pi OS and host-management software, deploy services through Kubernetes manifests. Worker3 is the deliberate exception for physical display integration: its web server still runs in Kubernetes, while a minimal Wayland session, Chromium, HDMI control, and touchscreen input run on the host.
 
 The guide intentionally starts with a simple, understandable design:
 
 - one k3s server using SQLite;
-- three equal application workers;
+- three application workers, with worker3 also hosting the physical DeskPi kiosk session;
 - Flannel VXLAN networking over an isolated, static Ethernet network;
 - Wi-Fi for home-LAN administration and Internet access;
 - local-path storage on each node's NVMe SSD; and
@@ -60,9 +63,9 @@ The Mac talks to the controller through the controller's Wi-Fi-resolvable hostna
 | `dkhundley-homelab-controller` | 4 GB | Single k3s server with SQLite | Control-plane/system workloads only |
 | `dkhundley-homelab-worker1` | 8 GB | Agent | Application workloads |
 | `dkhundley-homelab-worker2` | 8 GB | Agent | Application workloads |
-| `dkhundley-homelab-worker3` | 8 GB | Agent | Application workloads |
+| `dkhundley-homelab-worker3` | 8 GB | Agent | Application workloads plus the DeskPi kiosk host |
 
-Putting the controller on the 4 GB Pi is deliberate. Four gigabytes is sufficient for this small k3s control plane, and using all three 8 GB Pis as workers creates a symmetric 24 GB physical application-worker pool. A `NoSchedule` control-plane taint is the primary protection against ordinary applications competing with the control plane. Kubernetes system workloads may still run wherever their tolerations and scheduling rules allow.
+Putting the controller on the 4 GB Pi is deliberate. Four gigabytes is sufficient for this small k3s control plane, and using all three 8 GB Pis as workers creates a 24 GB physical application-worker pool. Worker3 remains generally schedulable, but its larger host reservation accounts for the graphical kiosk processes that Kubernetes cannot see. A `NoSchedule` control-plane taint is the primary protection against ordinary applications competing with the control plane. Kubernetes system workloads may still run wherever their tolerations and scheduling rules allow.
 
 Each Pi uses:
 
@@ -89,6 +92,8 @@ Traffic follows these paths:
 - pod Internet egress is masqueraded by the cluster networking and then follows the node's Wi-Fi default route; and
 - the Mac uses the Bonjour/mDNS name `dkhundley-homelab-controller.local` for SSH and Kubernetes API administration. It does not need a reachable path to `10.10.10.0/24`.
 
+The first application workload adds two deliberate paths without changing this routing model: worker3 Chromium reaches the weather Service at `10.10.10.13:30080` over the local Ethernet address, and trusted home-LAN clients can use `dkhundley-homelab-worker3.local:30080`. The backing pod remains pinned to worker3 because the physical display and its local weather-cache volume are there.
+
 Use a power supply and active cooling suitable for sustained Raspberry Pi 5 load. Power or thermal throttling can look like a Kubernetes capacity problem, so check `vcgencmd get_throttled` and temperatures when host performance is unexpectedly erratic.
 
 The initial cluster uses the default k3s pod and service ranges, made explicit in configuration:
@@ -110,6 +115,8 @@ Keep cluster ports on the isolated Ethernet network and administrative ports on 
 |---|---|---|---|---|
 | Home LAN / `wlan0` | TCP `22` | Trusted admin devices | All nodes | SSH administration |
 | Home LAN / `wlan0` | TCP `6443` | Mac or trusted admin subnet | Controller | External Kubernetes API access |
+| Home LAN / `wlan0` | TCP `30080` | Trusted home devices | Worker3 | Homelab weather-screen NodePort |
+| Cluster LAN / `eth0` | TCP `30080` | Worker3 kiosk | Worker3 | Local weather-screen access |
 | Cluster LAN / `eth0` | TCP `6443` | Workers | Controller | Agent supervisor and Kubernetes API |
 | Cluster LAN / `eth0` | UDP `8472` | Every node | Every node | Flannel VXLAN |
 | Cluster LAN / `eth0` | TCP `10250` | Every node | Every node | Kubelet API and metrics |
@@ -120,7 +127,7 @@ This runbook does not introduce a host firewall framework. If a firewall is alre
 
 The k3s server listens on all local addresses by default. This permits the Mac to reach TCP `6443` over Wi-Fi even though the server advertises its Ethernet address to the cluster. Do not bind the API only to `10.10.10.10`; that would break the direct Mac workflow.
 
-NodePort, ingress, and load-balancer exposure are separate design decisions. Selecting Ethernet as the Kubernetes node address does not make an application safely or conveniently reachable from the home LAN. Expose each application deliberately when those components are added.
+NodePort, ingress, and load-balancer exposure are separate design decisions. Selecting Ethernet as the Kubernetes node address does not make an application safely or conveniently reachable from the home LAN. The weather screen deliberately uses NodePort `30080` with a pod-local endpoint on worker3; no general-purpose ingress or load-balancer component is installed. Expose every later application independently.
 
 ### How to read the command blocks
 
@@ -139,7 +146,7 @@ The Ethernet addresses are fixed by this runbook rather than assigned by the hom
 | `dkhundley-homelab-controller` | `_________________` | `10.10.10.10/24` | `dkhundley-homelab-controller.local` | 4 GB; Mac-facing API endpoint |
 | `dkhundley-homelab-worker1` | `_________________` | `10.10.10.11/24` | `_________________` | 8 GB |
 | `dkhundley-homelab-worker2` | `_________________` | `10.10.10.12/24` | `_________________` | 8 GB |
-| `dkhundley-homelab-worker3` | `_________________` | `10.10.10.13/24` | `_________________` | 8 GB |
+| `dkhundley-homelab-worker3` | `_________________` | `10.10.10.13/24` | `_________________` | 8 GB; DeskPi kiosk host |
 
 After imaging and configuring each Pi in the next section, return to this table and collect the blank fields. Record the Wi-Fi name when it resolves reliably from the Mac; otherwise record the Wi-Fi address and update it if DHCP later changes it.
 
@@ -1072,6 +1079,7 @@ The timestamp should be unchanged. The replacement is constrained to the volume'
 The installation path ends here. Use the remaining sections when deploying workloads or operating the cluster:
 
 - [Workload resource policy](#workload-resource-policy)
+- [Worker3 DeskPi display workload](#worker3-deskpi-display-workload)
 - [Storage model and policy](#storage-model-and-policy)
 - [How Kubernetes resource protection works](#how-kubernetes-resource-protection-works)
 - [Observe and tune resources](#observe-and-tune-resources)
@@ -1079,6 +1087,69 @@ The installation path ends here. Use the remaining sections when deploying workl
 - [Upgrades and maintenance](#upgrades-and-maintenance)
 - [Network failure drill](#75-understand-the-two-network-failure-boundaries)
 - [Troubleshooting guide](#troubleshooting-guide)
+
+## Worker3 DeskPi display workload
+
+The [homelab-screen repository](https://github.com/dkhundley/homelab-screen) owns the container build, Kubernetes manifests, host kiosk helpers, and complete deployment procedure. Keep application-specific manifests there rather than turning this cluster-installation runbook into a second source of truth.
+
+The responsibility boundary is intentional:
+
+- a one-replica Next.js Deployment and ten-minute refresh CronJob run in Kubernetes;
+- a local-path PVC preserves the last weather response across pod replacements;
+- a fixed NodePort exposes the app at `10.10.10.13:30080` and `dkhundley-homelab-worker3.local:30080`;
+- Labwc, Chromium, `wlopm`, `swayidle`, and USB touch input remain host processes on worker3; and
+- Kubernetes receives no host device, Wayland socket, input-device, or elevated display access.
+
+Do not taint worker3 for this workload. Give it an ordinary custom placement label so the display pod is pinned while unrelated workloads can still use the remaining Allocatable capacity:
+
+**Run on:** the admin Mac.
+
+```shell
+kubectl label node dkhundley-homelab-worker3 \
+  homelab-screen/display=deskpi --overwrite
+kubectl get node dkhundley-homelab-worker3 \
+  -L homelab-screen/display
+```
+
+The generic worker policy from the installation section is correct for worker1 and worker2. On worker3 only, change `systemReserved` to the following values before starting the graphical kiosk:
+
+```yaml
+systemReserved:
+  cpu: "500m"
+  memory: "1Gi"
+```
+
+Leave worker3's `kubeReserved`, eviction thresholds, and minimum-reclaim values unchanged. This is a scheduling reservation for Raspberry Pi OS, Labwc, Chromium, and display utilities—not a hard CPU or memory partition. Restart `k3s-agent`, wait for worker3 to return to `Ready`, and query the effective merged configuration:
+
+**Run on:** worker3, then the admin Mac as indicated.
+
+```shell
+# worker3
+sudo systemctl restart k3s-agent
+sudo systemctl is-active k3s-agent
+
+# admin Mac
+kubectl wait --for=condition=Ready \
+  node/dkhundley-homelab-worker3 --timeout=120s
+kubectl get --raw \
+  /api/v1/nodes/dkhundley-homelab-worker3/proxy/configz \
+  | jq '.kubeletconfig | {systemReserved, kubeReserved, evictionHard}'
+```
+
+After installing the minimal graphical packages, repeat the route invariants. Adding a desktop session must not move the default route to Ethernet or make k3s advertise Wi-Fi:
+
+**Run on:** worker3.
+
+```shell
+ip -4 route get 10.10.10.10 | grep -w 'dev eth0'
+ip -4 route get 1.1.1.1 | grep -w 'dev wlan0'
+test -z "$(ip -4 route show default dev eth0)"
+sudo systemctl is-active k3s-agent
+```
+
+The application Deployment uses `externalTrafficPolicy: Local`. Although Kubernetes installs the NodePort rule cluster-wide, only worker3 has a local ready endpoint and should successfully serve this address. Do not add a second replica on another worker without first redesigning the node-local cache and deciding whether those nodes should also expose the service.
+
+The local-path weather cache is deliberately not highly available. Losing worker3 also loses the physical screen, so keeping this small reconstructible cache on the same node is an acceptable failure boundary. Back up only if the cache is useful for diagnosis; it is not application source data.
 
 ## Workload resource policy
 

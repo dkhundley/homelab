@@ -1,0 +1,116 @@
+---
+- name: Read the Ethernet IPv4 addresses
+  ansible.builtin.command:
+    argv: [ip, -4, -o, address, show, dev, "{{ k3s_cluster_interface }}"]
+  changed_when: false
+  register: ethernet_addresses
+
+- name: Read IPv4 default routes
+  ansible.builtin.command:
+    argv: [ip, -4, route, show, default]
+  changed_when: false
+  register: default_routes
+
+- name: Select an Ethernet peer
+  ansible.builtin.set_fact:
+    ethernet_peer_ip: >-
+      {{ hostvars[groups['workers'][0]].k3s_node_ip
+         if inventory_hostname in groups['controllers']
+         else hostvars[groups['controllers'][0]].k3s_node_ip }}
+
+- name: Read the route to an Ethernet peer
+  ansible.builtin.command:
+    argv: [ip, -4, route, get, "{{ ethernet_peer_ip }}"]
+  changed_when: false
+  register: ethernet_peer_route
+
+- name: Read the Internet route
+  ansible.builtin.command:
+    argv: [ip, -4, route, get, 1.1.1.1]
+  changed_when: false
+  register: internet_route
+
+- name: Read the active Ethernet profile name
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - -g
+      - GENERAL.CONNECTION
+      - device
+      - show
+      - "{{ k3s_cluster_interface }}"
+  changed_when: false
+  register: validated_ethernet_connection
+
+- name: Read persistent Ethernet profile settings
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - -g
+      - ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns,ipv4.never-default
+      - connection
+      - show
+      - "{{ validated_ethernet_connection.stdout | trim }}"
+  changed_when: false
+  register: validated_ethernet_profile
+
+- name: Assert the split network paths
+  ansible.builtin.assert:
+    that:
+      - (k3s_node_ip ~ '/24') in ethernet_addresses.stdout
+      - default_routes.stdout_lines | length == 1
+      - "('dev ' ~ k3s_admin_interface) in default_routes.stdout"
+      - "('dev ' ~ k3s_cluster_interface) not in default_routes.stdout"
+      - "('dev ' ~ k3s_cluster_interface) in ethernet_peer_route.stdout"
+      - "('dev ' ~ k3s_admin_interface) in internet_route.stdout"
+      - validated_ethernet_profile.stdout_lines[0] == 'manual'
+      - (k3s_node_ip ~ '/24') in validated_ethernet_profile.stdout_lines[1]
+      - validated_ethernet_profile.stdout_lines[-1] == 'yes'
+      - validated_ethernet_profile.stdout_lines[2:-1] | select | list | length == 0
+    fail_msg: Cluster traffic must use Ethernet and the only default route must use Wi-Fi.
+
+- name: Ping the Ethernet peer
+  ansible.builtin.command:
+    argv:
+      - ping
+      - -I
+      - "{{ k3s_cluster_interface }}"
+      - -c
+      - '3'
+      - "{{ ethernet_peer_ip }}"
+  changed_when: false
+
+- name: Resolve the k3s update service
+  ansible.builtin.command:
+    argv: [getent, hosts, update.k3s.io]
+  changed_when: false
+
+- name: Verify Internet HTTPS access
+  ansible.builtin.uri:
+    url: https://update.k3s.io/
+    method: HEAD
+    status_code: [200, 301, 302, 307, 308]
+
+- name: Wait for NTP synchronization
+  ansible.builtin.command:
+    argv: [timedatectl, show, -p, NTPSynchronized, --value]
+  changed_when: false
+  register: ntp_synchronized
+  until: ntp_synchronized.stdout == 'yes'
+  retries: 12
+  delay: 5
+
+- name: Check whether k3s is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: network_k3s_binary
+
+- name: Reject pre-existing pod or service CIDR route overlaps
+  ansible.builtin.script:
+    cmd: >-
+      {{ playbook_dir }}/files/check-route-overlap.py
+      {{ k3s_cluster_cidr }}
+      {{ k3s_service_cidr }}
+    executable: /usr/bin/python3
+  changed_when: false
+  when: not network_k3s_binary.stat.exists

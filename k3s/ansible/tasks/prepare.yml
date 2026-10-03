@@ -1,0 +1,124 @@
+---
+- name: Refresh the apt cache and perform the documented full upgrade
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+    upgrade: dist
+  notify: Reboot Raspberry Pi
+
+- name: Install host prerequisites
+  ansible.builtin.apt:
+    name: "{{ k3s_required_packages }}"
+    state: present
+
+- name: Check Raspberry Pi EEPROM firmware
+  ansible.builtin.command:
+    argv: [rpi-eeprom-update]
+  changed_when: false
+  register: eeprom_status
+  check_mode: false
+
+- name: Apply an available EEPROM update
+  ansible.builtin.command:
+    argv: [rpi-eeprom-update, -a]
+  changed_when: true
+  when: "'UPDATE AVAILABLE' in ((eeprom_status.stdout | default('')) ~ (eeprom_status.stderr | default('')))"
+  notify: Reboot Raspberry Pi
+
+- name: Check the Raspberry Pi kernel command line
+  ansible.builtin.stat:
+    path: /boot/firmware/cmdline.txt
+  register: boot_cmdline_file
+
+- name: Require the Raspberry Pi kernel command line
+  ansible.builtin.assert:
+    that:
+      - boot_cmdline_file.stat.exists
+      - boot_cmdline_file.stat.isreg
+    fail_msg: Raspberry Pi OS must provide /boot/firmware/cmdline.txt.
+
+- name: Read the Raspberry Pi kernel command line
+  ansible.builtin.slurp:
+    src: /boot/firmware/cmdline.txt
+  register: boot_cmdline
+
+- name: Enable the memory cgroup controller
+  ansible.builtin.lineinfile:
+    path: /boot/firmware/cmdline.txt
+    regexp: '^(.*)$'
+    line: '\1 cgroup_memory=1'
+    backrefs: true
+  when: "'cgroup_memory=1' not in (boot_cmdline.content | b64decode).split()"
+  notify: Reboot Raspberry Pi
+
+- name: Enable memory cgroup accounting
+  ansible.builtin.lineinfile:
+    path: /boot/firmware/cmdline.txt
+    regexp: '^(.*)$'
+    line: '\1 cgroup_enable=memory'
+    backrefs: true
+  when: "'cgroup_enable=memory' not in (boot_cmdline.content | b64decode).split()"
+  notify: Reboot Raspberry Pi
+
+- name: Inspect active swap
+  ansible.builtin.command:
+    argv: [swapon, --show, --noheadings]
+  changed_when: false
+  register: active_swap
+
+- name: Disable active swap
+  ansible.builtin.command:
+    argv: [swapoff, -a]
+  changed_when: true
+  when: active_swap.stdout | trim | length > 0
+
+- name: Disable persistent fstab swap entries
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(?!\s*#)(\S+\s+\S+\s+swap\s+.*)$'
+    replace: '# \1'
+
+- name: Collect service facts
+  ansible.builtin.service_facts:
+
+- name: Disable and mask dphys-swapfile when installed
+  ansible.builtin.systemd_service:
+    name: dphys-swapfile.service
+    enabled: false
+    masked: true
+    state: stopped
+  when: "'dphys-swapfile.service' in ansible_facts.services"
+
+- name: Enable periodic NVMe discard
+  ansible.builtin.systemd_service:
+    name: fstrim.timer
+    enabled: true
+    state: started
+
+- name: Reboot before post-prepare checks when required
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify the cgroup v2 filesystem
+  ansible.builtin.command:
+    argv: [stat, -f, -c, '%T', /sys/fs/cgroup]
+  changed_when: false
+  register: cgroup_filesystem
+
+- name: Read enabled cgroup controllers
+  ansible.builtin.slurp:
+    src: /sys/fs/cgroup/cgroup.controllers
+  register: cgroup_controllers
+
+- name: Verify swap remains disabled
+  ansible.builtin.command:
+    argv: [swapon, --show, --noheadings]
+  changed_when: false
+  register: post_prepare_swap
+
+- name: Assert the prepared host state
+  ansible.builtin.assert:
+    that:
+      - cgroup_filesystem.stdout == 'cgroup2fs'
+      - "'memory' in (cgroup_controllers.content | b64decode).split()"
+      - post_prepare_swap.stdout | trim | length == 0
+    fail_msg: Memory cgroups must be active under cgroup v2 and swap must be disabled.

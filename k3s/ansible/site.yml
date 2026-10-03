@@ -1,0 +1,126 @@
+---
+- name: Validate the Ansible control node and inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [preflight]
+  tasks:
+    - name: Run control-node preflight checks
+      ansible.builtin.import_tasks: tasks/control-preflight.yml
+
+- name: Validate the Raspberry Pi hosts
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [preflight]
+  tasks:
+    - name: Run host preflight checks
+      ansible.builtin.import_tasks: tasks/host-preflight.yml
+
+- name: Prepare the Raspberry Pi hosts
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+  serial: 1
+  any_errors_fatal: true
+  tags: [prepare]
+  handlers:
+    - name: Reboot Raspberry Pi
+      ansible.builtin.reboot:
+        msg: Rebooting after Raspberry Pi host preparation
+        reboot_timeout: 600
+  tasks:
+    - name: Prepare the operating system
+      ansible.builtin.import_tasks: tasks/prepare.yml
+
+- name: Configure the cluster Ethernet network
+  hosts: k3s_cluster
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tags: [network]
+  tasks:
+    - name: Configure the Ethernet connection
+      ansible.builtin.import_tasks: tasks/network-configure.yml
+
+- name: Validate the cluster Ethernet network
+  hosts: k3s_cluster
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [network]
+  tasks:
+    - name: Validate network paths
+      ansible.builtin.import_tasks: tasks/network-validate.yml
+
+- name: Install the k3s controller
+  hosts: controllers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [server]
+  handlers:
+    - name: Restart k3s server
+      ansible.builtin.systemd_service:
+        name: k3s
+        state: restarted
+      when: k3s_server_binary.stat.exists
+  tasks:
+    - name: Configure and install the controller
+      ansible.builtin.import_tasks: tasks/server.yml
+
+- name: Join the k3s workers
+  hosts: workers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tags: [agents]
+  handlers:
+    - name: Restart k3s agent
+      ansible.builtin.systemd_service:
+        name: k3s-agent
+        state: restarted
+      when: k3s_agent_binary.stat.exists
+  tasks:
+    - name: Configure and install the worker
+      ansible.builtin.import_tasks: tasks/agent.yml
+
+- name: Configure administrator kubectl access
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [kubeconfig]
+  tasks:
+    - name: Install the local kubeconfig
+      ansible.builtin.import_tasks: tasks/kubeconfig.yml
+
+- name: Validate each Raspberry Pi node
+  hosts: k3s_cluster
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [validate]
+  tasks:
+    - name: Run node validation
+      ansible.builtin.import_tasks: tasks/validate-node.yml
+
+- name: Validate the Kubernetes cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [validate]
+  tasks:
+    - name: Run cluster validation
+      ansible.builtin.import_tasks: tasks/validate-cluster.yml
+
+- name: Run opt-in cluster smoke tests
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [never, smoke]
+  tasks:
+    - name: Run disposable workload tests
+      ansible.builtin.import_tasks: tasks/smoke.yml

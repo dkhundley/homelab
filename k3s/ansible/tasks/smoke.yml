@@ -1,0 +1,293 @@
+---
+- name: Run networking and storage smoke tests
+  block:
+    - name: Remove stale smoke-test namespaces
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - delete
+          - namespace
+          - k3s-smoke
+          - storage-smoke
+          - --ignore-not-found=true
+          - --wait=true
+      changed_when: false
+
+    - name: Create the networking smoke-test namespace
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - create
+          - namespace
+          - k3s-smoke
+      changed_when: true
+
+    - name: Create cross-node network test pods
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - apply
+          - -f
+          - "{{ playbook_dir }}/files/network-smoke.yml"
+      changed_when: true
+
+    - name: Wait for network test pods
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - k3s-smoke
+          - wait
+          - --for=condition=Ready
+          - pod
+          - --all
+          - --timeout=120s
+      changed_when: false
+
+    - name: Read the source pod IP
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - k3s-smoke
+          - get
+          - pod
+          - source
+          - -o
+          - "jsonpath={.status.podIP}"
+      changed_when: false
+      register: source_pod_ip
+
+    - name: Read the destination pod IP
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - k3s-smoke
+          - get
+          - pod
+          - destination
+          - -o
+          - "jsonpath={.status.podIP}"
+      changed_when: false
+      register: destination_pod_ip
+
+    - name: Verify bidirectional cross-node pod networking
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - k3s-smoke
+          - exec
+          - "{{ item.pod }}"
+          - --
+          - ping
+          - -c
+          - '3'
+          - "{{ item.destination }}"
+      loop:
+        - pod: source
+          destination: "{{ destination_pod_ip.stdout }}"
+        - pod: destination
+          destination: "{{ source_pod_ip.stdout }}"
+      changed_when: false
+
+    - name: Verify Kubernetes DNS
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - k3s-smoke
+          - exec
+          - source
+          - --
+          - nslookup
+          - kubernetes.default.svc.cluster.local
+      changed_when: false
+
+    - name: Verify pod Internet egress
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - k3s-smoke
+          - exec
+          - source
+          - --
+          - wget
+          - -q
+          - -O
+          - /dev/null
+          - https://example.com
+      changed_when: false
+
+    - name: Inspect Flannel's Ethernet underlay on every node
+      ansible.builtin.command:
+        argv: [ip, -d, link, show, flannel.1]
+      delegate_to: "{{ item }}"
+      become: true
+      loop: "{{ groups['k3s_cluster'] }}"
+      changed_when: false
+      register: flannel_links
+
+    - name: Require every Flannel VXLAN to use its cluster IP
+      ansible.builtin.assert:
+        that:
+          - hostvars[item.item].k3s_node_ip in item.stdout
+        fail_msg: "Flannel on {{ item.item }} is not using its cluster Ethernet address."
+      loop: "{{ flannel_links.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Create the storage smoke-test namespace
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - create
+          - namespace
+          - storage-smoke
+      changed_when: true
+
+    - name: Create the local-path persistence test
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - apply
+          - -f
+          - "{{ playbook_dir }}/files/storage-smoke.yml"
+      changed_when: true
+
+    - name: Wait for the storage test deployment
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - storage-smoke
+          - rollout
+          - status
+          - deployment/writer
+          - --timeout=120s
+      changed_when: false
+
+    - name: Read the initial persistent marker
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - storage-smoke
+          - exec
+          - deployment/writer
+          - --
+          - cat
+          - /data/marker
+      changed_when: false
+      register: initial_storage_marker
+
+    - name: Read the original writer pod name
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - storage-smoke
+          - get
+          - pod
+          - -l
+          - app=writer
+          - -o
+          - "jsonpath={.items[0].metadata.name}"
+      changed_when: false
+      register: original_writer_pod
+
+    - name: Delete the original writer pod
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - storage-smoke
+          - delete
+          - pod
+          - "{{ original_writer_pod.stdout }}"
+          - --wait=true
+      changed_when: true
+
+    - name: Wait for the replacement writer pod
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - storage-smoke
+          - wait
+          - --for=condition=Ready
+          - pod
+          - -l
+          - app=writer
+          - --timeout=120s
+      changed_when: false
+    - name: Read the replacement pod's persistent marker
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - -n
+          - storage-smoke
+          - exec
+          - deployment/writer
+          - --
+          - cat
+          - /data/marker
+      changed_when: false
+      register: replacement_storage_marker
+
+    - name: Assert the marker survived pod replacement
+      ansible.builtin.assert:
+        that:
+          - initial_storage_marker.stdout | length > 0
+          - replacement_storage_marker.stdout == initial_storage_marker.stdout
+        fail_msg: The local-path marker changed or disappeared after pod replacement.
+  always:
+    - name: Remove smoke-test namespaces
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ k3s_kubeconfig_path }}"
+          - delete
+          - namespace
+          - k3s-smoke
+          - storage-smoke
+          - --ignore-not-found=true
+          - --wait=true
+      changed_when: false

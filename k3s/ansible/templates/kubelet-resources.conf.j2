@@ -1,0 +1,20 @@
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+mergeDefaultEvictionSettings: true
+systemReserved:
+{% for key, value in kubelet_system_reserved.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}
+kubeReserved:
+{% for key, value in kubelet_kube_reserved.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}
+evictionHard:
+{% for key, value in kubelet_eviction_hard.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}
+evictionMinimumReclaim:
+{% for key, value in kubelet_eviction_minimum_reclaim.items() %}
+  {{ key }}: "{{ value }}"
+{% endfor %}

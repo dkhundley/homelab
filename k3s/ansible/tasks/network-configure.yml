@@ -1,0 +1,74 @@
+---
+- name: Discover the active Ethernet connection profile
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - -g
+      - GENERAL.CONNECTION
+      - device
+      - show
+      - "{{ k3s_cluster_interface }}"
+  changed_when: false
+  register: ethernet_connection
+
+- name: Require an active Ethernet connection profile
+  ansible.builtin.assert:
+    that:
+      - ethernet_connection.stdout | trim | length > 0
+      - ethernet_connection.stdout | trim != '--'
+    fail_msg: "{{ k3s_cluster_interface }} must have an active NetworkManager profile."
+
+- name: Configure the isolated cluster Ethernet profile
+  community.general.nmcli:
+    conn_name: "{{ ethernet_connection.stdout | trim }}"
+    ifname: "{{ k3s_cluster_interface }}"
+    type: ethernet
+    ip4:
+      - "{{ k3s_node_ip }}/24"
+    method4: manual
+    never_default4: true
+    dns4: []
+    dns4_ignore_auto: true
+    autoconnect: true
+    conn_reload: true
+    state: present
+  register: ethernet_profile
+
+- name: Read persistent Ethernet gateway and DNS settings
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - -g
+      - ipv4.gateway,ipv4.dns
+      - connection
+      - show
+      - "{{ ethernet_connection.stdout | trim }}"
+  changed_when: false
+  register: ethernet_gateway_dns
+
+- name: Clear persistent Ethernet gateway and DNS settings
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - connection
+      - modify
+      - "{{ ethernet_connection.stdout | trim }}"
+      - ipv4.gateway
+      - ''
+      - ipv4.dns
+      - ''
+  when: ethernet_gateway_dns.stdout | trim | length > 0
+  changed_when: true
+  register: ethernet_gateway_dns_clear
+
+- name: Activate a changed Ethernet profile
+  ansible.builtin.command:
+    argv:
+      - nmcli
+      - connection
+      - up
+      - "{{ ethernet_connection.stdout | trim }}"
+  when:
+    - ethernet_profile.changed or (ethernet_gateway_dns_clear.changed | default(false))
+    - not ansible_check_mode
+  changed_when: true

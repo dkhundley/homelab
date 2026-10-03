@@ -1,0 +1,14 @@
+---
+kubelet_system_reserved:
+  cpu: 100m
+  memory: 256Mi
+kubelet_kube_reserved:
+  cpu: 400m
+  memory: 1Gi
+kubelet_eviction_hard:
+  memory.available: 256Mi
+  nodefs.available: 10%
+  nodefs.inodesFree: 5%
+  imagefs.available: 10%
+  imagefs.inodesFree: 5%
+

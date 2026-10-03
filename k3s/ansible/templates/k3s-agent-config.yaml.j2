@@ -1,0 +1,7 @@
+---
+server: "https://{{ hostvars[groups['controllers'][0]].k3s_node_ip }}:6443"
+token-file: /etc/rancher/k3s/agent-token
+node-name: "{{ inventory_hostname }}"
+node-ip: "{{ k3s_node_ip }}"
+flannel-iface: "{{ k3s_cluster_interface }}"
+

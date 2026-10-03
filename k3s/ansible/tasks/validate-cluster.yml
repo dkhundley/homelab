@@ -1,0 +1,190 @@
+---
+- name: Read all Kubernetes nodes
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ k3s_kubeconfig_path }}"
+      - get
+      - nodes
+      - -o
+      - json
+  changed_when: false
+  register: kubernetes_nodes_json
+
+- name: Read the external kubeconfig endpoint
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ k3s_kubeconfig_path }}"
+      - config
+      - view
+      - --minify
+      - -o
+      - "jsonpath={.clusters[0].cluster.server}"
+  changed_when: false
+  register: external_kubeconfig_endpoint
+
+- name: Assert the home-LAN API endpoint
+  ansible.builtin.assert:
+    that:
+      - external_kubeconfig_endpoint.stdout == ('https://' ~ k3s_controller_admin_endpoint ~ ':6443')
+    fail_msg: The external kubeconfig must use the controller's home-LAN mDNS endpoint.
+
+- name: Parse Kubernetes nodes
+  ansible.builtin.set_fact:
+    kubernetes_nodes: "{{ (kubernetes_nodes_json.stdout | from_json).items }}"
+
+- name: Assert the registered node set
+  ansible.builtin.assert:
+    that:
+      - kubernetes_nodes | length == 4
+      - kubernetes_nodes | map(attribute='metadata.name') | sort == groups['k3s_cluster'] | sort
+    fail_msg: Kubernetes must contain exactly the four inventory nodes.
+
+- name: Assert each node's identity and readiness
+  ansible.builtin.assert:
+    that:
+      - item.status.nodeInfo.architecture == 'arm64'
+      - item.status.nodeInfo.kubeletVersion == k3s_version
+      - >-
+        item.status.addresses
+        | selectattr('type', 'equalto', 'InternalIP')
+        | map(attribute='address')
+        | first == hostvars[item.metadata.name].k3s_node_ip
+      - >-
+        item.status.conditions
+        | selectattr('type', 'equalto', 'Ready')
+        | map(attribute='status')
+        | first == 'True'
+    fail_msg: "Node {{ item.metadata.name }} has the wrong architecture, version, IP, or Ready state."
+  loop: "{{ kubernetes_nodes }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Select the controller node response
+  ansible.builtin.set_fact:
+    controller_node: >-
+      {{ kubernetes_nodes
+         | selectattr('metadata.name', 'equalto', groups['controllers'][0])
+         | first }}
+
+- name: Assert the control-plane taint
+  ansible.builtin.assert:
+    that:
+      - controller_node.metadata.labels['node-role.kubernetes.io/worker'] | default('') == ''
+      - >-
+        controller_node.spec.taints | default([])
+        | selectattr('key', 'equalto', 'node-role.kubernetes.io/control-plane')
+        | selectattr('value', 'equalto', 'true')
+        | selectattr('effect', 'equalto', 'NoSchedule')
+        | list | length == 1
+    fail_msg: >-
+      The controller must not have a worker role and must carry the documented
+      NoSchedule control-plane taint.
+
+- name: Assert worker labels
+  ansible.builtin.assert:
+    that:
+      - item.metadata.labels['node-role.kubernetes.io/worker'] | default('') == 'worker'
+      - >-
+        item.metadata.name != 'dkhundley-homelab-worker3'
+        or item.metadata.labels['homelab-screen/display'] | default('') == 'deskpi'
+    fail_msg: "Worker {{ item.metadata.name }} is missing an expected role or display label."
+  loop: "{{ kubernetes_nodes | selectattr('metadata.name', 'in', groups['workers']) | list }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+
+- name: Wait for kube-system pods
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ k3s_kubeconfig_path }}"
+      - -n
+      - kube-system
+      - wait
+      - --for=condition=Ready
+      - pod
+      - --all
+      - --timeout=180s
+  changed_when: false
+
+- name: Read kube-system pods
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ k3s_kubeconfig_path }}"
+      - -n
+      - kube-system
+      - get
+      - pods
+      - -o
+      - json
+  changed_when: false
+  register: kube_system_pods_json
+
+- name: Reject bundled ingress and ServiceLB pods
+  ansible.builtin.assert:
+    that:
+      - >-
+        (kube_system_pods_json.stdout | from_json).items
+        | map(attribute='metadata.name')
+        | select('match', '^coredns-')
+        | list | length >= 1
+      - >-
+        (kube_system_pods_json.stdout | from_json).items
+        | map(attribute='metadata.name')
+        | select('match', '^metrics-server-')
+        | list | length >= 1
+      - >-
+        (kube_system_pods_json.stdout | from_json).items
+        | map(attribute='metadata.name')
+        | select('match', '^local-path-provisioner-')
+        | list | length >= 1
+      - >-
+        (kube_system_pods_json.stdout | from_json).items
+        | map(attribute='metadata.name')
+        | select('search', '^(traefik|svclb-)')
+        | list | length == 0
+    fail_msg: >-
+      CoreDNS, metrics-server, and local-path-provisioner must be present, while
+      Traefik and ServiceLB must remain disabled.
+
+- name: Read the local-path StorageClass
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ k3s_kubeconfig_path }}"
+      - get
+      - storageclass
+      - local-path
+      - -o
+      - json
+  changed_when: false
+  register: local_path_storage_class_json
+
+- name: Assert local-path is the default StorageClass
+  ansible.builtin.assert:
+    that:
+      - >-
+        (local_path_storage_class_json.stdout | from_json).metadata.annotations['storageclass.kubernetes.io/is-default-class']
+        | default('false') == 'true'
+    fail_msg: local-path must be the default StorageClass.
+
+- name: Verify secrets encryption from the controller
+  ansible.builtin.command:
+    argv: [/usr/local/bin/k3s, secrets-encrypt, status]
+  delegate_to: "{{ groups['controllers'][0] }}"
+  become: true
+  changed_when: false
+  register: validated_secrets_encryption
+
+- name: Require enabled secrets encryption
+  ansible.builtin.assert:
+    that:
+      - "'Enabled' in validated_secrets_encryption.stdout"
+    fail_msg: k3s secrets encryption must be enabled.

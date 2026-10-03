@@ -1,0 +1,55 @@
+---
+- name: Select the expected k3s service
+  ansible.builtin.set_fact:
+    expected_k3s_service: "{{ 'k3s' if inventory_hostname in groups['controllers'] else 'k3s-agent' }}"
+
+- name: Read the k3s service state
+  ansible.builtin.systemd_service:
+    name: "{{ expected_k3s_service }}"
+  register: k3s_service_state
+
+- name: Read the installed k3s version
+  ansible.builtin.command:
+    argv: [/usr/local/bin/k3s, --version]
+  changed_when: false
+  register: validated_k3s_version
+
+- name: Read the node Ethernet address
+  ansible.builtin.command:
+    argv: [ip, -4, -o, address, show, dev, "{{ k3s_cluster_interface }}"]
+  changed_when: false
+  register: validated_ethernet_address
+
+- name: Read the node Internet route
+  ansible.builtin.command:
+    argv: [ip, -4, route, get, 1.1.1.1]
+  changed_when: false
+  register: validated_internet_route
+
+- name: Read the worker route to the controller
+  ansible.builtin.command:
+    argv:
+      - ip
+      - -4
+      - route
+      - get
+      - "{{ hostvars[groups['controllers'][0]].k3s_node_ip }}"
+  changed_when: false
+  register: validated_controller_route
+  when: inventory_hostname in groups['workers']
+
+- name: Run the k3s host configuration check
+  ansible.builtin.command:
+    argv: [/usr/local/bin/k3s, check-config]
+  changed_when: false
+
+- name: Assert the node service, version, address, and routes
+  ansible.builtin.assert:
+    that:
+      - k3s_service_state.status.ActiveState == 'active'
+      - k3s_service_state.status.UnitFileState == 'enabled'
+      - k3s_version in validated_k3s_version.stdout
+      - (k3s_node_ip ~ '/24') in validated_ethernet_address.stdout
+      - "('dev ' ~ k3s_admin_interface) in validated_internet_route.stdout"
+      - inventory_hostname in groups['controllers'] or ('dev ' ~ k3s_cluster_interface) in validated_controller_route.stdout
+    fail_msg: "{{ inventory_hostname }} does not match the desired k3s host state."

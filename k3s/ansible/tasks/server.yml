@@ -1,0 +1,133 @@
+---
+- name: Check for an existing k3s server binary
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_server_binary
+
+- name: Read the installed k3s server version
+  ansible.builtin.command:
+    argv: [/usr/local/bin/k3s, --version]
+  changed_when: false
+  register: installed_server_version
+  when: k3s_server_binary.stat.exists
+
+- name: Reject an unmanaged k3s server version
+  ansible.builtin.assert:
+    that:
+      - k3s_version in installed_server_version.stdout
+    fail_msg: >-
+      The installed k3s version does not match {{ k3s_version }}. Follow the manual
+      upgrade procedure; this setup playbook will not upgrade or downgrade a cluster.
+  when: k3s_server_binary.stat.exists
+
+- name: Create the k3s configuration directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Check for the controller agent token
+  ansible.builtin.stat:
+    path: /etc/rancher/k3s/agent-token
+  register: controller_agent_token
+
+- name: Generate a new agent-only token
+  ansible.builtin.command:
+    argv: [openssl, rand, -hex, '32']
+  changed_when: false
+  register: generated_agent_token
+  when:
+    - not controller_agent_token.stat.exists
+    - not ansible_check_mode
+  no_log: true
+
+- name: Store the new agent-only token
+  ansible.builtin.copy:
+    content: "{{ generated_agent_token.stdout | default('') }}\n"
+    dest: /etc/rancher/k3s/agent-token
+    owner: root
+    group: root
+    mode: '0600'
+  when:
+    - not controller_agent_token.stat.exists
+    - not ansible_check_mode
+  no_log: true
+  diff: false
+
+- name: Install the k3s server configuration
+  ansible.builtin.template:
+    src: k3s-server-config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart k3s server
+
+- name: Create the kubelet drop-in directory
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the controller kubelet resource policy
+  ansible.builtin.template:
+    src: kubelet-resources.conf.j2
+    dest: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-homelab-resources.conf
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart k3s server
+
+- name: Download the official k3s installer
+  ansible.builtin.get_url:
+    url: "{{ k3s_installer_url }}"
+    dest: /tmp/k3s-install.sh
+    owner: root
+    group: root
+    mode: '0700'
+  when: not k3s_server_binary.stat.exists
+
+- name: Install the pinned k3s server
+  ansible.builtin.command:
+    argv: [/tmp/k3s-install.sh, server]
+    creates: /usr/local/bin/k3s
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+  when:
+    - not k3s_server_binary.stat.exists
+    - not ansible_check_mode
+
+- name: Enable and start the k3s server
+  ansible.builtin.systemd_service:
+    name: k3s
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Apply pending k3s server configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Kubernetes API
+  ansible.builtin.wait_for:
+    host: "{{ k3s_node_ip }}"
+    port: 6443
+    timeout: 180
+  when: not ansible_check_mode
+
+- name: Verify k3s secrets encryption
+  ansible.builtin.command:
+    argv: [/usr/local/bin/k3s, secrets-encrypt, status]
+  changed_when: false
+  register: secrets_encryption
+  when: not ansible_check_mode
+
+- name: Require enabled secrets encryption
+  ansible.builtin.assert:
+    that:
+      - "'Enabled' in secrets_encryption.stdout"
+    fail_msg: k3s secrets encryption must be enabled.
+  when: not ansible_check_mode

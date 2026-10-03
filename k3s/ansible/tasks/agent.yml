@@ -1,0 +1,180 @@
+---
+- name: Read the controller agent-only token
+  ansible.builtin.slurp:
+    src: /etc/rancher/k3s/agent-token
+  delegate_to: "{{ groups['controllers'][0] }}"
+  run_once: true
+  register: controller_agent_token_content
+  no_log: true
+
+- name: Check for an existing k3s agent binary
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_agent_binary
+
+- name: Read the installed k3s agent version
+  ansible.builtin.command:
+    argv: [/usr/local/bin/k3s, --version]
+  changed_when: false
+  register: installed_agent_version
+  when: k3s_agent_binary.stat.exists
+
+- name: Reject an unmanaged k3s agent version
+  ansible.builtin.assert:
+    that:
+      - k3s_version in installed_agent_version.stdout
+    fail_msg: >-
+      The installed k3s version does not match {{ k3s_version }}. Follow the manual
+      upgrade procedure; this setup playbook will not upgrade or downgrade a cluster.
+  when: k3s_agent_binary.stat.exists
+
+- name: Create the k3s configuration directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Store the controller agent-only token
+  ansible.builtin.copy:
+    content: "{{ controller_agent_token_content.content | b64decode }}"
+    dest: /etc/rancher/k3s/agent-token
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  diff: false
+
+- name: Install the k3s agent configuration
+  ansible.builtin.template:
+    src: k3s-agent-config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart k3s agent
+
+- name: Create the kubelet drop-in directory
+  ansible.builtin.file:
+    path: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Install the worker kubelet resource policy
+  ansible.builtin.template:
+    src: kubelet-resources.conf.j2
+    dest: /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-homelab-resources.conf
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart k3s agent
+
+- name: Download the official k3s installer
+  ansible.builtin.get_url:
+    url: "{{ k3s_installer_url }}"
+    dest: /tmp/k3s-install.sh
+    owner: root
+    group: root
+    mode: '0700'
+  when: not k3s_agent_binary.stat.exists
+
+- name: Install the pinned k3s agent
+  ansible.builtin.command:
+    argv: [/tmp/k3s-install.sh, agent]
+    creates: /usr/local/bin/k3s
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version }}"
+  when:
+    - not k3s_agent_binary.stat.exists
+    - not ansible_check_mode
+
+- name: Enable and start the k3s agent
+  ansible.builtin.systemd_service:
+    name: k3s-agent
+    enabled: true
+    state: started
+  when: not ansible_check_mode
+
+- name: Apply pending k3s agent configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the worker to become Ready
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - wait
+      - --for=condition=Ready
+      - "node/{{ inventory_hostname }}"
+      - --timeout=180s
+  delegate_to: "{{ groups['controllers'][0] }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Read the worker role label
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - get
+      - node
+      - "{{ inventory_hostname }}"
+      - -o
+      - "jsonpath={.metadata.labels.node-role\\.kubernetes\\.io/worker}"
+  delegate_to: "{{ groups['controllers'][0] }}"
+  changed_when: false
+  register: worker_role_label
+  when: not ansible_check_mode
+
+- name: Apply the worker role label
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - label
+      - node
+      - "{{ inventory_hostname }}"
+      - node-role.kubernetes.io/worker=worker
+      - --overwrite
+  delegate_to: "{{ groups['controllers'][0] }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - worker_role_label.stdout != 'worker'
+
+- name: Read custom worker labels
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - get
+      - node
+      - "{{ inventory_hostname }}"
+      - -o
+      - json
+  delegate_to: "{{ groups['controllers'][0] }}"
+  changed_when: false
+  register: worker_node_json
+  when:
+    - not ansible_check_mode
+    - k3s_extra_node_labels | length > 0
+
+- name: Apply custom worker labels
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/k3s
+      - kubectl
+      - label
+      - node
+      - "{{ inventory_hostname }}"
+      - "{{ item.key }}={{ item.value }}"
+      - --overwrite
+  loop: "{{ k3s_extra_node_labels | dict2items }}"
+  delegate_to: "{{ groups['controllers'][0] }}"
+  changed_when: true
+  when:
+    - not ansible_check_mode
+    - (worker_node_json.stdout | from_json).metadata.labels[item.key] | default('') != item.value
